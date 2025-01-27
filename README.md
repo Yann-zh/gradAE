@@ -18,7 +18,7 @@ python run_ae.py
 ```
 
 ### Output
-The execution results will be stored in `ae/plots` and `ae/results` directory.
+The execution results will be stored in `ae/results` directory.
 
 ### Datasets
 The datasets used for running this code are sourced from [ADBench](https://github.com/Minqi824/ADBench/tree/main/adbench/datasets/Classical). Data for this project is located in the `data/data_table` path.
