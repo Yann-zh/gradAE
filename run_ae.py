@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score
 from torch.optim import Adam
 
 from ae.EntropyEarlyStop import getEntropyStopOffline
-from ae.GradStop_pretty import getGradStopOffline
+from ae.GradStop import getGradStopOffline
 from ae.model.utils_ae import dataLoading, weights_init_normal, set_seed, get_ae_hps, cal_entropy
 from ae.model.VanillaAE import Autoencoder
 from logger import Logger, compute_theta
