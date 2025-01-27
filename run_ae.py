@@ -6,27 +6,28 @@ from sklearn.metrics import roc_auc_score
 from torch.optim import Adam
 
 from ae.EntropyEarlyStop import getEntropyStopOffline
-from ae.GradStop import getGradStopOffline
+from ae.GradStop_pretty import getGradStopOffline
 from ae.model.utils_ae import dataLoading, weights_init_normal, set_seed, get_ae_hps, cal_entropy
 from ae.model.VanillaAE import Autoencoder
-from plotter import Plotter, compute_theta
+from logger import Logger, compute_theta
+import traceback
 
 # Fixed parameters
-k_list = [20]
-sample_ratio_list = [10]
-resample_list = [True]
-resample_freq_list = [10]
+k = 20
+B_eval_size = 400
+resample = True
+resample_freq = 10
 seeds = [0, 1, 2]
 
 # adjustable parameters, according to specific Algorithm-dataset pair on which GradStop is applied
-theta_threshold_list = [1.57]
+t_D = 1.57
 window_size = 20
-R = 0.001
-beneficial_threshold = 0.05
-significance_threshold = 0.01
+R_down = 0.001
+t_C_B = 0.05
+t_C_S = 0.01
 
 
-def naive_train(x, y, lr=0.001, epoch=100, plotter=None):
+def naive_train(x, y, lr=0.001, epoch=100, logger=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device：{device}')
     X = torch.from_numpy(x).type(torch.FloatTensor).to(device)
@@ -47,15 +48,17 @@ def naive_train(x, y, lr=0.001, epoch=100, plotter=None):
     outlier_num = sum(y)
     print(f'#Inliers：{inlier_num}, #Outliers：{outlier_num}')
 
+    last_k_indices = []
+    top_k_indices = []
+
     for e in tqdm(range(epoch)):
         model.train()
-        inlier_losses = []
-        outlier_losses = []
-        outlier_grads_epoch = []
-        inlier_grads_epoch = []
-        entropy = []
-        inlier_inter = 0
-        outlier_inter = 0
+
+        G_top = []
+        G_last = []
+
+        C_last = 0
+        C_top = 0
 
         batch_size = X.size(0)
         for i in range(0, X.size(0), batch_size):
@@ -64,18 +67,14 @@ def naive_train(x, y, lr=0.001, epoch=100, plotter=None):
 
             losses = recon_score
             loss = torch.mean(losses)
-            numpy_recon_score = recon_score.cpu().detach().numpy()
-            entropy = cal_entropy(numpy_recon_score)
 
             opt.zero_grad()
 
-            inlier_grads_epoch = []
-            outlier_grads_epoch = []
             all_grads = []
             all_labels = []
             for j in range(len(X)):
-                if len(all_grads) >= sample_ratio * (k_i + k_o):
-                    if len(outlier_grads_epoch) == 0:
+                if len(all_grads) >= B_eval_size:
+                    if sum(all_labels) == 0:
                         while train_y[j] != 1:
                             j += 1
                     else:
@@ -85,91 +84,61 @@ def naive_train(x, y, lr=0.001, epoch=100, plotter=None):
                 for g in grad:
                     grad_flatten = np.append(grad_flatten, g.flatten().clone().detach().cpu().numpy(), axis=0)
 
-                if train_y[j] == 1:
-                    outlier_losses.append(recon_score[j].item())
-                    outlier_grads_epoch.append(grad_flatten)
-                else:
-                    inlier_losses.append(recon_score[j].item())
-                    inlier_grads_epoch.append(grad_flatten)
                 all_grads.append(grad_flatten)
                 all_labels.append(train_y[j])
 
             loss.backward()
 
             all_grads = np.array(all_grads)
-            all_labels = np.array(all_labels)
             all_grads_norm = np.linalg.norm(all_grads, axis=1)
 
             if (resample and e % resample_freq == 0) or e == 0:
-                inlier_indices = np.argsort(all_grads_norm)[:k_i]
-                outlier_indices = np.argsort(-all_grads_norm)[:k_o]
+                last_k_indices = np.argsort(all_grads_norm)[:k_i]
+                top_k_indices = np.argsort(-all_grads_norm)[:k_o]
 
-            inlier_grads_epoch = all_grads[inlier_indices]
-            outlier_grads_epoch = all_grads[outlier_indices]
+            G_last = all_grads[last_k_indices]
+            G_top = all_grads[top_k_indices]
 
-            inlier_num_ground_truth = sum(all_labels[inlier_indices])
-            outlier_num_ground_truth = sum(all_labels[outlier_indices])
             if e == 0:
-                print(
-                    f'Sampling done. #Inliers | #Outliers | #Total: {len(inlier_losses)} | {len(outlier_losses)} | {len(inlier_losses) + len(outlier_losses)}. '
-                    f'Get last-{k_i}and top-{k_o} as sets G_last and G_top.')
+                print(f'\nGradSample done. Get last-{k_i} and top-{k_o} as sets G_last and G_top.\n')
 
-            inlier_inter = np.linalg.norm(np.sum(inlier_grads_epoch, axis=0), axis=0) / np.sum(
-                np.linalg.norm(inlier_grads_epoch, axis=1), axis=0)
-            outlier_inter = np.linalg.norm(np.sum(outlier_grads_epoch, axis=0), axis=0) / np.sum(
-                np.linalg.norm(outlier_grads_epoch, axis=1), axis=0)
+            C_last = np.linalg.norm(np.sum(G_last, axis=0), axis=0) / np.sum(
+                np.linalg.norm(G_last, axis=1), axis=0)
+            C_top = np.linalg.norm(np.sum(G_top, axis=0), axis=0) / np.sum(
+                np.linalg.norm(G_top, axis=1), axis=0)
 
             opt.step()
 
         # Compute and log statistics to plotter
 
-        o_grad_sum = np.sum(outlier_grads_epoch, axis=0)
+        o_grad_sum = np.sum(G_top, axis=0)
 
-        i_grad_sum = np.sum(inlier_grads_epoch, axis=0)
+        i_grad_sum = np.sum(G_last, axis=0)
 
-        theta = compute_theta(o_grad_sum, i_grad_sum)
+        D = compute_theta(o_grad_sum, i_grad_sum)
 
-        plotter.data_append('o_inter', outlier_inter)
-        plotter.data_append('o_num_ground_truth', outlier_num_ground_truth)
-
-        plotter.data_append('entropy', entropy)
+        logger.data_append('C_top', C_top)
+        logger.data_append('C_last', C_last)
 
         if e != 0:
-            num_avg = min(len(plotter['theta']), 8)
-            plotter.data_append('theta', (sum(plotter['theta'][-num_avg:]) + theta) / (num_avg + 1))
-            plotter.data_append('minus_inter',
-                                (sum(plotter['minus_inter'][-num_avg:]) + inlier_inter - outlier_inter) / (num_avg + 1))
+            num_avg = min(len(logger['D']), 8)  # Smoothing against fluctuation
+            logger.data_append('D', (sum(logger['D'][-num_avg:]) + D) / (num_avg + 1))
+            logger.data_append('C_diff',
+                               (sum(logger['C_diff'][-num_avg:]) + C_last - C_top) / (num_avg + 1))
         else:
-            plotter.data_append('theta', theta)
-            plotter.data_append('minus_inter', inlier_inter - outlier_inter)
-
-        plotter.data_append('i_inter', inlier_inter)
-        plotter.data_append('i_num_ground_truth', inlier_num_ground_truth)
+            logger.data_append('D', D)
+            logger.data_append('C_diff', C_last - C_top)
 
         with torch.no_grad():
             model.eval()
             numpy_recon_score = model(X).cpu().detach().numpy()
             auc = roc_auc_score(y, numpy_recon_score)
-            auc_sample = roc_auc_score([0] * len(inlier_losses) + [1] * len(outlier_losses),
-                                       inlier_losses + outlier_losses)
-            plotter.data_append('AUC', round(auc, 3))
-            plotter.data_append('AUC_sample', round(auc_sample, 3))
+            logger.data_append('AUC', round(auc, 3))
 
-    if np.mean(plotter['theta'][5:10]) > theta_threshold:
-        plotter.data_assign('GradStop', [0])
-        plotter.data_assign('ZeroStop', [True])
-    else:
-        plotter.data_assign('GradStop', [getGradStopOffline(plotter['minus_inter'], k=window_size, r=R,
-                                                            beneficial_threshold=beneficial_threshold,
-                                                            significance_threshold=significance_threshold)])
-        plotter.data_assign('ZeroStop', [False])
-    plotter.data_assign('EntropyStop', [getEntropyStopOffline(plotter['entropy'], k=100, R_down=0.1)])
-    plotter.data_assign('AUCStop',
-                        [getEntropyStopOffline([1 - auc for auc in plotter['AUC_sample']], k=21, R_down=0.1)])
+        logger.data_assign('GradStopEpoch', [getGradStopOffline(logger['C_diff'], logger['D'], window_size=window_size,
+                                                           R_down=R_down, t_C_B=t_C_B, t_C_S=t_C_S, t_D=1.57)])
 
-    plotter.plot_early_stoppings()
-    plotter.plot_whole_early_stoppings()
-    return auc, numpy_recon_score
+    return logger['AUC'][logger['GradStopEpoch'][0]], numpy_recon_score
 
 
 if __name__ == '__main__':
@@ -178,57 +147,58 @@ if __name__ == '__main__':
 
     act, dropout, h_dim, num_layer, lr, epoch = get_ae_hps()  # get all the hp configs
 
+    # Down sample datasets to 10000 for ones that larger than 10000
     n_samples_up_threshold = 10000
     dry_run = False
 
+    all_AUCs = {}
+    g = os.walk(r"data/data_table")
+    for _, _, file_names in g:
+        for file_name in file_names:
+            all_AUCs[file_name.split('.')[0]] = []
+
     for seed in seeds:
-        for k_o in k_list:
-            k_i = k_o
-            for sample_ratio in sample_ratio_list:
-                for theta_threshold in theta_threshold_list:
-                    for resample in resample_list:
-                        for resample_freq in resample_freq_list:
-                            print('k_o', 'k_i', 'sample_ratio',
-                                  'theta_threshold', 'resample', 'resample_freq')
-                            print(k_o, k_i, sample_ratio, theta_threshold,
-                                  resample, resample_freq)
-                            if os.path.exists(
-                                    f'plots/{k_o}_{k_i}_{sample_ratio}_{theta_threshold}_{resample}_{resample_freq}_{seed}_'):
-                                continue
-                            plotter = Plotter(k_o=k_o, k_i=k_i,
-                                              sample_ratio=sample_ratio,
-                                              theta_threshold=theta_threshold, resample=resample,
-                                              resample_freq=resample_freq, seed=seed)
-                            g = os.walk(r"data/data_table")
-                            for path, dir_list, file_list in g:
-                                for file_name in file_list:
-                                    try:
-                                        if dry_run:
-                                            epoch = 10
-                                            if file_name not in [
-                                                '1_ALOI.npz',
-                                            ]:
-                                                continue
-                                        print(f'Training on：{file_name}')
-                                        plotter.set_cur_dataset(file_name.split('.')[0])
-                                        AUC = []
-                                        Time = []
+        k_i = k_o = k
+        print('k_o', 'k_i', 'B_eval_size', 't_D', 't_C_B', 't_C_S', 'resample', 'resample_freq')
+        print(k_o, k_i, B_eval_size, t_D, t_C_B, t_C_S, resample, resample_freq)
+        if os.path.exists(
+                f'results/{t_D}_{t_C_B}_{t_C_S}_{seed}_'):
+            continue
+        logger = Logger(t_D=t_D, t_C_B=t_C_B, t_C_S=t_C_S, seed=seed)
 
-                                        data_path = os.path.join(path, file_name)
-                                        x, y = dataLoading(data_path, n_samples_up_threshold=n_samples_up_threshold)
+        g = os.walk(r"data/data_table")
+        for path, dirs, file_list in g:
+            for file_name in file_list:
+                try:
+                    if dry_run:
+                        epoch = 10
+                        if file_name not in [
+                            '1_ALOI.npz',
+                        ]:
+                            continue
+                    print(f'Training on：{file_name}')
+                    logger.set_cur_dataset(file_name.split('.')[0])
 
-                                        print(file_name)
-                                        print(f'hp: {act}-{dropout}-{h_dim}-{num_layer}-{lr}-{epoch}')
+                    data_path = os.path.join(path, file_name)
+                    x, y = dataLoading(data_path, n_samples_up_threshold=n_samples_up_threshold)
 
-                                        set_seed(seed)
-                                        auc, outlier_score = naive_train(x, y, lr, epoch, plotter=plotter)
-                                        AUC.append(auc)
-                                    except Exception as e:
-                                        print(f'Dataset {file_name} failed.')
-                                        print(f'{e.args}')
-                                        import traceback
+                    print(file_name)
+                    print(f'hp: {act}-{dropout}-{h_dim}-{num_layer}-{lr}-{epoch}')
 
-                                        traceback.print_exc()
-                                        continue
+                    set_seed(seed)
+                    auc, outlier_score = naive_train(x, y, lr, epoch, logger=logger)
+                    all_AUCs[logger.get_cur_dataset()].append(auc)
+                except Exception as e:
+                    print(f'Failed. Seed: {seed}, Dataset: {file_name}.')
+                    print(f'{e.args}')
+                    traceback.print_exc()
+                    continue
 
-                            plotter.save_all_data()
+        logger.save_all_data()
+
+    mean_AUCs = []
+    for dataset, AUCs in all_AUCs.items():
+        print(f'AUC on dataset {dataset}: {round(np.mean(AUCs), 3)}')
+        mean_AUCs.append(np.mean(AUCs))
+
+    print(f'Averaged AUC is {round(np.mean(mean_AUCs), 3)}')
