@@ -16,6 +16,16 @@ Execute the code by running:
 ```bash
 python run_ae.py
 ```
+### Running the Baselines
+Execute the ensemble AEs by running:
+```bash
+python run_randnet.py
+python run_robod.py
+```
+Execute the ensemble AEs by running:
+```bash
+python baselines/run_baselines.py
+```
 
 ### Output
 The execution results will be stored in `ae/results` directory.
