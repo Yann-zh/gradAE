@@ -48,12 +48,10 @@ def dataLoading_sample(path, n_samples_up_threshold):
 
     if X.shape[0] > n_samples_up_threshold:
         outlier_rate = sum(y) / X.shape[0]
-        print(f'进行正负样本等比例抽样，异常占比：{outlier_rate}，'
-              f'正常：{int((1 - outlier_rate) * n_samples_up_threshold)}，'
-              f'异常：{int(outlier_rate * n_samples_up_threshold)}。')
+
         X_y0 = X[y == 0]
         X_y1 = X[y == 1]
-        # 分别从每一类中抽取样本
+        
         from sklearn.utils import resample
         X_y0_sampled = resample(X_y0, replace=True,
                                 n_samples=int((1 - outlier_rate) * n_samples_up_threshold),

@@ -61,21 +61,9 @@ class PYOD_pipeline():
 
 
 def save_dict_to_csv(data, filename):
-    """
-    将字典数据保存为CSV文件。
-
-    参数:
-        data (dict): 需要保存的字典数据。
-        filename (str): CSV文件的名称。
-    """
-    # 打开文件，准备写入
     with open(filename, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-
-        # 写入标题（可选）
         writer.writerow(['Key', 'Value'])
-
-        # 遍历字典，写入每一行
         for key, value in data.items():
             writer.writerow([key, value])
 
@@ -88,14 +76,14 @@ if __name__ == '__main__':
         try:
             for baseline in UOD_baselines:
                 performance_dict = {}
-                print(f'正在运行{baseline}.')
+                print(f'Runnning {baseline}.')
                 g = os.walk(r"../data/data_table")
                 for path, dir_list, file_list in g:
                     dataset_aucs = []
                     for file_name in file_list:
                         aucs = []
                         try:
-                            print(f'训练的数据集是：{file_name}')
+                            print(f'Training on：{file_name}')
                             AUC = []
                             Time = []
                             data_path = os.path.join(path, file_name)
@@ -106,7 +94,7 @@ if __name__ == '__main__':
                             auc = roc_auc_score(y, score)
                             aucs.append(auc)
                         except Exception as e:
-                            print(f'数据集{file_name}失败。')
+                            print(f'Dataset {file_name} failed.')
                             print(f'{e.args}')
                             import traceback
                             traceback.print_exc()
@@ -116,8 +104,8 @@ if __name__ == '__main__':
                         performance_dict[f'{dataset_number}'] = auc
                         dataset_aucs.append(auc)
                     performance_dict[f'mean'] = np.mean(dataset_aucs)
-                print(f'保存到baseline_performance_{seed}.csv')
+                print(f'Saving to baseline_performance_{seed}.csv')
                 save_dict_to_csv(performance_dict, f'{baseline}_performance_{seed}_unlimited.csv')
         except KeyboardInterrupt as e:
-            print(f'中断训练.')
+            print(f'Interrupted.')
             continue

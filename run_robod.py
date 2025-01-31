@@ -61,4 +61,4 @@ if __name__ == '__main__':
         df.to_csv(f'./res/{template_model_name}-{th}.csv', index=False)
 
     import subprocess
-    subprocess.run('~/code/send_msg.sh "robod任务完成"',shell=True,capture_output=False)
+    subprocess.run('~/code/send_msg.sh "robod done"',shell=True,capture_output=False)
